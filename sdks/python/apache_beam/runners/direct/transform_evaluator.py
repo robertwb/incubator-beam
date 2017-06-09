@@ -349,12 +349,8 @@ class _PubSubReadEvaluator(_TransformEvaluator):
   def __init__(self, *args, **kwargs):
     super(_PubSubReadEvaluator, self).__init__(*args, **kwargs)
     source = self._applied_ptransform.transform._source
-    subscription_name = (
-        source.subscription or 'dataflow_%x' % random.randrange(1 << 32))
     self._subscription = self.create_subscription(
-        source.topic, subscription_name)
-    if not source.subscription:
-      self._subscription.create()
+        source.topic, source.subscription)
 
   _subscription_cache = {}
   @classmethod
@@ -365,10 +361,6 @@ class _PubSubReadEvaluator(_TransformEvaluator):
       cls._subscription_cache[key] = (
           pubsub.Client().topic(topic).subscription(subscription_name))
     return cls._subscription_cache[key]
-
-  def __del__(self):
-    if not self._applied_ptransform.transform._source.subscription:
-      self._subscription.delete()
 
   def start_bundle(self):
     pass
@@ -397,7 +389,9 @@ class _PubSubReadEvaluator(_TransformEvaluator):
         Timestamp.of(time.time()))
 
   def _read_from_pubsub(self):
-    results = self._subscription.pull(return_immediately=True)
+    results = self._subscription.pull(
+        return_immediately=True,
+        max_messages=_BoundedReadEvaluator.MAX_ELEMENT_PER_BUNDLE)
     if results:
       # Direct runner has no retry.
       self._subscription.acknowledge([ack_id for ack_id, message in results])

@@ -63,6 +63,12 @@ class DirectRunner(PipelineRunner):
     return pvalue.PCollection(pcoll.pipeline)
 
   def apply_ReadStringsFromPubSub(self, transform, pcoll):
+    if not transform._source.subscription:
+      # TODO(robertwb): Automatically create (and destroy) a subscription for
+      # the duration of the pipeline.
+      raise NotImplementedError(
+          'A pre-created subscription must be provided '
+          'to read PubSub on the DirectRunner.')
     # Execute this as a native transform.
     return pvalue.PCollection(pcoll.pipeline)
 
@@ -77,7 +83,7 @@ class DirectRunner(PipelineRunner):
         self._buffer = []
       def process(self, elem):
         self._buffer.append(elem.encode('utf-8'))
-        if len(self._buffer) >= 100:
+        if len(self._buffer) >= 1000:
           self._flush()
       def finish_bundle(self):
         self._flush()
