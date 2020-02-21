@@ -30,12 +30,12 @@ class Session(object):
   def __init__(self, bindings={}):
     self._bindings = dict(bindings)
 
-  def evaluate(self, expr):  # type: (Session, Expression) -> Any
+  def evaluate(self, expr):  # type: (Expression) -> Any
     if expr not in self._bindings:
       self._bindings[expr] = expr.evaluate_at(self)
     return self._bindings[expr]
 
-  def lookup(self, expr):  #  type: (Session, Expression) -> Any
+  def lookup(self, expr):  #  type: (Expression) -> Any
     return self._bindings[expr]
 
 
@@ -60,7 +60,7 @@ class Expression(object):
     # Store for preservation through pickling.
     self._id = _id or '%s_%s' % (name, id(self))
 
-  def proxy(self):  # type: (Expression) -> T
+  def proxy(self):  # type: () -> T
     return self._proxy
 
   def __hash__(self):
@@ -72,18 +72,18 @@ class Expression(object):
   def __ne__(self, other):
     return not self == other
 
-  def evaluate_at(self, session):  # type: (Expression, Session) -> T
+  def evaluate_at(self, session):  # type: (Session) -> T
     """Returns the result of self with the bindings given in session."""
     raise NotImplementedError(type(self))
 
-  def requires_partition_by_index(self):  # type: (Expression) -> bool
+  def requires_partition_by_index(self):  # type: () -> bool
     """Whether this expression requires its argument(s) to be partitioned
     by index."""
     # TODO: It might be necessary to support partitioning by part of the index,
     # for some args, which would require returning more than a boolean here.
     raise NotImplementedError(type(self))
 
-  def preserves_partition_by_index(self):  # type: (Expression) -> bool
+  def preserves_partition_by_index(self):  # type: () -> bool
     """Whether the result of this expression will be partitioned by index
     whenever all of its inputs are partitioned by index."""
     raise NotImplementedError(type(self))
@@ -99,7 +99,8 @@ class PlaceholderExpression(Expression):
     """Initialize a placeholder expression.
 
     Args:
-      proxy: A proxy object with the type expected to be bound to this expression. Used for type checking at pipeline construction time.
+      proxy: A proxy object with the type expected to be bound to this
+        expression. Used for type checking at pipeline construction time.
     """
 
   def args(self):
@@ -126,7 +127,9 @@ class ConstantExpression(Expression):
 
     Args:
       value: The constant value to be produced by this expression.
-      proxy: (Optional) a proxy object with same type as `value` to use for rapid type checking at pipeline construction time. If not provided, `value` will be used directly.
+      proxy: (Optional) a proxy object with same type as `value` to use for
+        rapid type checking at pipeline construction time. If not provided,
+        `value` will be used directly.
     """
     if proxy is None:
       proxy = value
@@ -162,12 +165,20 @@ class ComputedExpression(Expression):
 
     Args:
       name: The name of this expression.
-      func: The function that will be used to compute the value of this expression. Should accept arguments of the types returned when evaluating the `args` expressions.
-      args: The list of expressions that will be used to produce inputs to `func`.
-      proxy: (Optional) a proxy object with same type as the objects that this ComputedExpression will produce at execution time. If not provided, a proxy will be generated using `func` and the proxies of `args`.
+      func: The function that will be used to compute the value of this
+        expression. Should accept arguments of the types returned when
+        evaluating the `args` expressions.
+      args: The list of expressions that will be used to produce inputs to
+        `func`.
+      proxy: (Optional) a proxy object with same type as the objects that this
+        ComputedExpression will produce at execution time. If not provided, a
+        proxy will be generated using `func` and the proxies of `args`.
       _id: (Optional) a string to uniquely identify this expression.
-      requires_partition_by_index: Whether this expression requires its argument(s) to be partitioned by index.
-      preserves_partition_by_index: Whether the result of this expression will be partitioned by index whenever all of its inputs are partitioned by index.
+      requires_partition_by_index: Whether this expression requires its
+        argument(s) to be partitioned by index.
+      preserves_partition_by_index: Whether the result of this expression will
+        be partitioned by index whenever all of its inputs are partitioned by
+        index.
     """
     args = tuple(args)
     if proxy is None:
