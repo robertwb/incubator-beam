@@ -1,7 +1,9 @@
-import collections
-import re
-
 import apache_beam as beam
+import argparse
+import collections
+import google.protobuf.text_format
+import re
+import sys
 
 
 class TransformWriter:
@@ -209,12 +211,29 @@ class SourceWriter:
     return '\n'.join(self.to_source_lines()) + '\n'
 
 
-def run():
+def create_pipeline():
   p = beam.Pipeline()
   p | beam.Create([('a', 1), ('a', 2),
                    ('b', 3)], reshuffle=False) | beam.GroupByKey() | beam.Map(print)
-  print(source_for(p.to_runner_api()))
+  return p
 
+def run():
+  parser = argparse.ArgumentParser(
+      prog = 'Reverse',
+      description = 'Create a Python template based on a Beam runner API proto')
+  parser.add_argument('filename', nargs='?')
+  args = parser.parse_args()
+
+  if args.filename:
+    if args.filename == '-':
+      proto = google.protobuf.text_format.Parse(sys.stdin.read(), beam.beam_runner_api_pb2.Pipeline())
+    else:
+      with open(args.filename, 'rb') as file:
+        proto = google.protobuf.text_format.Parse(file.read(), beam.beam_runner_api_pb2.Pipeline())
+  else:
+    proto = create_pipeline().to_runner_api()
+
+  print(source_for(proto))
 
 if __name__ == '__main__':
   run()
