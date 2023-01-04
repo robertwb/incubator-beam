@@ -79,7 +79,7 @@ def source_for(pipeline):
       # TODO: Can we make parameterized transforms? Seems hard to pull out
       # what can be shared across differently parameterized composites, but
       # would be pretty cool.
-      trasform_writer = SourceWriter(
+      transform_writer = SourceWriter(
           preamble=[
               f'class {transform_name}(beam.PTransform):',
               SourceWriter.INDENT,
@@ -88,20 +88,20 @@ def source_for(pipeline):
           ])
       for subtransform in transform_proto.subtransforms:
         constructor = define_transform(
-            trasform_writer, local_pcolls, subtransform)
-        use_transform(trasform_writer, local_pcolls, subtransform, constructor)
+            transform_writer, local_pcolls, subtransform)
+        use_transform(transform_writer, local_pcolls, subtransform, constructor)
       if len(transform_proto.outputs) == 0:
         pass
       elif len(transform_proto.outputs) == 1:
-        trasform_writer.add_statement(
+        transform_writer.add_statement(
             f'return {local_pcolls[next(iter(transform_proto.outputs.values()))]}'
         )
       else:
-        trasform_writer.add_statement(
+        transform_writer.add_statement(
             'return {%s}' + ', '.join(
                 f'"{name}": local_pcolls[pcoll]' for name,
                 pcoll in transform_proto.outputs))
-      writer.add_define(trasform_writer)
+      writer.add_define(transform_writer)
       return transform_name + "()"
     else:
       return to_safe_name(transform_id) + '_TODO()'
