@@ -215,10 +215,25 @@ class SourceWriter:
     return '\n'.join(self.to_source_lines()) + '\n'
 
 
-def create_pipeline():
+def create_python_pipeline():
   p = beam.Pipeline()
   p | beam.Create([('a', 1), ('a', 2),
                    ('b', 3)], reshuffle=False) | beam.GroupByKey() | beam.Map(print)
+  return p
+
+def create_yaml_pipeline():
+  from apache_beam.yaml.yaml_transform import YamlTransform
+  p = beam.Pipeline()
+  p | YamlTransform('''
+          type: chain
+          transforms:
+            - type: Create
+              elements: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+            - type: PyMap
+              fn: "lambda x: x * x + x"
+            - type: PyMap
+              fn: "lambda x: x + 41"
+          ''')
   return p
 
 def run():
@@ -226,6 +241,8 @@ def run():
       prog = 'Reverse',
       description = 'Create a Python template based on a Beam runner API proto')
   parser.add_argument('filename', nargs='?')
+  parser.add_argument('--output', default='python')
+  parser.add_argument('--source', default='python')
   args = parser.parse_args()
 
   if args.filename:
@@ -235,7 +252,13 @@ def run():
       with open(args.filename, 'rb') as file:
         proto = google.protobuf.text_format.Parse(file.read(), beam.beam_runner_api_pb2.Pipeline())
   else:
-    proto = create_pipeline().to_runner_api()
+    if args.source == 'python':
+      pipeline_object = create_python_pipeline()
+    elif args.source == 'yaml':
+      pipeline_object = create_yaml_pipeline()
+    else:
+      raise ValueError("Unknown source type: " + args.source)
+    proto = pipeline_object.to_runner_api()
 
   print(source_for(proto))
 
