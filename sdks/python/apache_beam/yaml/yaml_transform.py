@@ -16,6 +16,7 @@
 #
 
 import collections
+import json
 import logging
 import re
 import uuid
@@ -194,8 +195,15 @@ class Scope(object):
       }
     try:
       # pylint: disable=undefined-loop-variable
-      return provider.create_transform(
+      ptransform = provider.create_transform(
           spec['type'], SafeLineLoader.strip_metadata(args))
+      # TODO: Should we have a better API for adding annotations than letting
+      # this be mutable?
+      ptransform.annotations()['yaml_type'] = spec['type']
+      ptransform.annotations()['yaml_args'] = json.dumps(args)
+      ptransform.annotations()['yaml_provider'] = json.dumps(provider.to_json())
+      return ptransform
+
     except Exception as exn:
       if isinstance(exn, TypeError):
         # Create a slightly more generic error message for argument errors.

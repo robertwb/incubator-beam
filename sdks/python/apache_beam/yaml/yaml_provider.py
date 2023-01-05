@@ -225,6 +225,9 @@ class InlineProvider(Provider):
   def create_transform(self, type, args):
     return self._transform_factories[type](**args)
 
+  def to_json(self):
+    return {'type': "InlineProvider"}
+
 
 PRIMITIVE_NAMES_TO_ATOMIC_TYPE = {
     py_type.__name__: schema_type
@@ -396,6 +399,8 @@ def parse_providers(provider_specs):
   providers = collections.defaultdict(list)
   for provider_spec in provider_specs:
     provider = ExternalProvider.provider_from_spec(provider_spec)
+    # TODO: Do this better.
+    provider.to_json = lambda result=provider_spec: result
     for transform_type in provider.provided_transforms():
       providers[transform_type].append(provider)
   return providers
