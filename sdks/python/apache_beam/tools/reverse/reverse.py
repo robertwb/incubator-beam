@@ -1,7 +1,9 @@
-import collections
-import re
-
 import apache_beam as beam
+import argparse
+import collections
+import google.protobuf.text_format
+import re
+import sys
 
 
 class TransformWriter:
@@ -77,7 +79,7 @@ def source_for(pipeline):
       # TODO: Can we make parameterized transforms? Seems hard to pull out
       # what can be shared across differently parameterized composites, but
       # would be pretty cool.
-      trasform_writer = SourceWriter(
+      transform_writer = SourceWriter(
           preamble=[
               f'class {transform_name}(beam.PTransform):',
               SourceWriter.INDENT,
@@ -86,20 +88,20 @@ def source_for(pipeline):
           ])
       for subtransform in transform_proto.subtransforms:
         constructor = define_transform(
-            trasform_writer, local_pcolls, subtransform)
-        use_transform(trasform_writer, local_pcolls, subtransform, constructor)
+            transform_writer, local_pcolls, subtransform)
+        use_transform(transform_writer, local_pcolls, subtransform, constructor)
       if len(transform_proto.outputs) == 0:
         pass
       elif len(transform_proto.outputs) == 1:
-        trasform_writer.add_statement(
+        transform_writer.add_statement(
             f'return {local_pcolls[next(iter(transform_proto.outputs.values()))]}'
         )
       else:
-        trasform_writer.add_statement(
+        transform_writer.add_statement(
             'return {%s}' + ', '.join(
                 f'"{name}": local_pcolls[pcoll]' for name,
                 pcoll in transform_proto.outputs))
-      writer.add_define(trasform_writer)
+      writer.add_define(transform_writer)
       return transform_name + "()"
     else:
       return to_safe_name(transform_id) + '_TODO()'
@@ -149,6 +151,9 @@ def source_for(pipeline):
       preamble=['with beam.Pipeline() as p:', SourceWriter.INDENT])
 
   for transform_id in roots:
+    # Note the similarity here between the top-level and each transform.
+    # TODO: Consolidate? (The primary difference is being in an expand
+    # method vs. being in a with block.)
     constructor = define_transform(pipeline_writer, pcolls, transform_id)
     use_transform(pipeline_writer, pcolls, transform_id, constructor)
 
@@ -210,11 +215,29 @@ class SourceWriter:
     return '\n'.join(self.to_source_lines()) + '\n'
 
 
-def run():
+def create_pipeline():
   p = beam.Pipeline()
   p | beam.Create([('a', 1), ('a', 2),
                    ('b', 3)], reshuffle=False) | beam.GroupByKey() | beam.Map(print)
-  print(source_for(p.to_runner_api()))
+  return p
+
+def run():
+  parser = argparse.ArgumentParser(
+      prog = 'Reverse',
+      description = 'Create a Python template based on a Beam runner API proto')
+  parser.add_argument('filename', nargs='?')
+  args = parser.parse_args()
+
+  if args.filename:
+    if args.filename == '-':
+      proto = google.protobuf.text_format.Parse(sys.stdin.read(), beam.beam_runner_api_pb2.Pipeline())
+    else:
+      with open(args.filename, 'rb') as file:
+        proto = google.protobuf.text_format.Parse(file.read(), beam.beam_runner_api_pb2.Pipeline())
+  else:
+    proto = create_pipeline().to_runner_api()
+
+  print(source_for(proto))
 
 
 if __name__ == '__main__':
