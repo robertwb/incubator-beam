@@ -137,17 +137,18 @@ def source_for(pipeline):
                 pcoll in transform_proto.outputs.items()
             })
 
+  # The top-level one is typically artificial.
   roots = pipeline.root_transform_ids
   while len(roots) == 1:
     roots = pipeline.components.transforms[next(iter(roots))].subtransforms
 
+  # Note the similarity here between the top-level and each transform.
+  # TODO: Consolidate? (The primary difference is being in an expand
+  # method vs. being in a with block.)
   pipeline_writer = SourceWriter(
       preamble=['with beam.Pipeline() as p:', SourceWriter.INDENT])
 
   for transform_id in roots:
-    # Note the similarity here between the top-level and each transform.
-    # TODO: Consolidate? (The primary difference is being in an expand
-    # method vs. being in a with block.)
     constructor = define_transform(pipeline_writer, pcolls, transform_id)
     use_transform(pipeline_writer, pcolls, transform_id, constructor)
 
