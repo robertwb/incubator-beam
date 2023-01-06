@@ -193,15 +193,18 @@ class Scope(object):
           for (key, value) in spec.items()
           if key not in ('type', 'name', 'input', 'output')
       }
+    real_args = SafeLineLoader.strip_metadata(args)
     try:
       # pylint: disable=undefined-loop-variable
-      ptransform = provider.create_transform(
-          spec['type'], SafeLineLoader.strip_metadata(args))
+      ptransform = provider.create_transform(spec['type'], real_args)
       # TODO: Should we have a better API for adding annotations than letting
       # this be mutable?
-      ptransform.annotations()['yaml_type'] = spec['type']
-      ptransform.annotations()['yaml_args'] = json.dumps(args)
-      ptransform.annotations()['yaml_provider'] = json.dumps(provider.to_json())
+      annotations = dict(
+          yaml_type=spec['type'],
+          yaml_args=json.dumps(real_args),
+          yaml_provider=json.dumps(provider.to_json()),
+          **ptransform.annotations())
+      ptransform.annotations = lambda: annotations
       return ptransform
 
     except Exception as exn:

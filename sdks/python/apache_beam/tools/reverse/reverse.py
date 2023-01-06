@@ -1,9 +1,11 @@
 import apache_beam as beam
 import argparse
 import collections
-import google.protobuf.text_format
+import json
 import re
 import sys
+
+import google.protobuf.text_format
 
 
 class TransformWriter:
@@ -18,6 +20,11 @@ well_known_transforms = {
     'beam:transform:group_by_key:v1': lambda payload: 'beam.GroupByKey()',
     'beam:transform:impulse:v1': lambda payload: 'beam.Impulse()',
 }
+
+
+class TransformDefiner:
+  def define_transform(self, code_writer, context):
+    raise NotImplementedError(type(self))
 
 
 def source_for(pipeline):
@@ -58,7 +65,17 @@ def source_for(pipeline):
       # This works well for the very basic primitives.
       return well_known_transforms[transform_proto.spec.urn](
           transform_proto.spec.payload)
+    elif 'yaml_args' in transform_proto.annotations:
+      return '%s(%s)' % (
+          transform_proto.annotations['yaml_type'].decode('utf-8'),
+          ', '.join("%s=%r" % item for item in json.loads(transform_proto.annotations['yaml_args']).items()),
+      )
     elif transform_proto.subtransforms:
+      return define_composite_transform(writer, pcolls, transform_proto)
+    else:
+      return to_safe_name(transform_id) + '_TODO()'
+
+  def define_composite_transform(writer, pcolls, transform_proto):
       # Composites that we don't know.
       if len(transform_proto.inputs) == 0:
         arg_name = 'p'
@@ -103,8 +120,6 @@ def source_for(pipeline):
                 pcoll in transform_proto.outputs))
       writer.add_define(transform_writer)
       return transform_name + "()"
-    else:
-      return to_safe_name(transform_id) + '_TODO()'
 
   # TODO: All these params, plus duplicated above, indicate some kind of a
   # single scope object would be nice.
