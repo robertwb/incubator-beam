@@ -14,10 +14,73 @@ well_known_transforms = {
 }
 
 
+class TransformDefinerContext:
+  def __init__(self):
+    self.unique_names = set()
+
+  def to_safe_name(self, s):
+    if not s:
+      s = 'Transform'
+    s = re.sub('[^a-zA-Z_]', '_', s)
+    if s in self.unique_names:
+      counter = 1
+      while f'{s}_{counter}' in self.unique_names:
+        counter += 1
+      s = f'{s}_{counter}'
+    self.unique_names.add(s)
+    return s
+
+
 class TransformDefiner:
-  def define_transform(self, code_writer, context):
+  def define_transform(self, code_writer, transform_proto, context):
     raise NotImplementedError(type(self))
 
+class CompositeTransformDefiner(TransformDefiner):
+  def define_transform(self, writer, transform_proto, context):
+      # Composites that we don't know.
+      if len(transform_proto.inputs) == 0:
+        arg_name = 'p'
+        local_pcolls = {}
+      elif len(transform_proto.inputs) == 1:
+        arg_name = 'input'
+        local_pcolls = {
+            next(iter(transform_proto.inputs.values())): 'input'
+        }
+      else:
+        arg_name = 'inputs'
+        local_pcolls = {
+            pcoll: f'inputs["{name}"]'
+            for pcoll,
+            name in transform_proto.inputs.items()
+        }
+      transform_name = context.to_safe_name(transform_proto.unique_name)
+      # TODO: Can we make parameterized transforms? Seems hard to pull out
+      # what can be shared across differently parameterized composites, but
+      # would be pretty cool.
+      transform_writer = SourceWriter(
+          preamble=[
+              f'class {transform_name}(beam.PTransform):',
+              SourceWriter.INDENT,
+              f'def expand({arg_name})',
+              SourceWriter.INDENT,
+          ])
+      for subtransform in transform_proto.subtransforms:
+        constructor = context.define_transform(
+            transform_writer, subtransform)
+        context.use_transform(transform_writer, local_pcolls, subtransform, constructor)
+      if len(transform_proto.outputs) == 0:
+        pass
+      elif len(transform_proto.outputs) == 1:
+        transform_writer.add_statement(
+            f'return {local_pcolls[next(iter(transform_proto.outputs.values()))]}'
+        )
+      else:
+        transform_writer.add_statement(
+            'return {%s}' + ', '.join(
+                f'"{name}": local_pcolls[pcoll]' for name,
+                pcoll in transform_proto.outputs))
+      writer.add_define(transform_writer)
+      return transform_name + "()"
 
 def source_for(pipeline):
   print(pipeline)
@@ -26,25 +89,13 @@ def source_for(pipeline):
   chain = False
 
   pcolls = {}
-  unique_names = set()
+  context = TransformDefinerContext()
   root = 'p'
   # TODO: This should be local, and account for composites.
   consumers = collections.defaultdict(list)
   for transform_id, transform in pipeline.components.transforms.items():
     for tag, pcoll in transform.inputs.items():
       consumers[pcoll].append((transform_id, tag))
-
-  def to_safe_name(s):
-    if not s:
-      s = 'Transform'
-    s = re.sub('[^a-zA-Z_]', '_', s)
-    if s in unique_names:
-      counter = 1
-      while f'{s}_{counter}' in unique_names:
-        counter += 1
-      s = f'{s}_{counter}'
-    unique_names.add(s)
-    return s
 
   def define_transform(writer, transform_id):
     transform_proto = pipeline.components.transforms[transform_id]
@@ -63,55 +114,9 @@ def source_for(pipeline):
           ', '.join("%s=%r" % item for item in json.loads(transform_proto.annotations['yaml_args']).items()),
       )
     elif transform_proto.subtransforms:
-      return define_composite_transform(writer, transform_proto)
+      return CompositeTransformDefiner().define_transform(writer, transform_proto, context)
     else:
-      return to_safe_name(transform_id) + '_TODO()'
-
-  def define_composite_transform(writer, transform_proto):
-      # Composites that we don't know.
-      if len(transform_proto.inputs) == 0:
-        arg_name = 'p'
-        local_pcolls = {}
-      elif len(transform_proto.inputs) == 1:
-        arg_name = 'input'
-        local_pcolls = {
-            next(iter(transform_proto.inputs.values())): 'input'
-        }
-      else:
-        arg_name = 'inputs'
-        local_pcolls = {
-            pcoll: f'inputs["{name}"]'
-            for pcoll,
-            name in transform_proto.inputs.items()
-        }
-      transform_name = to_safe_name(transform_proto.unique_name)
-      # TODO: Can we make parameterized transforms? Seems hard to pull out
-      # what can be shared across differently parameterized composites, but
-      # would be pretty cool.
-      transform_writer = SourceWriter(
-          preamble=[
-              f'class {transform_name}(beam.PTransform):',
-              SourceWriter.INDENT,
-              f'def expand({arg_name})',
-              SourceWriter.INDENT,
-          ])
-      for subtransform in transform_proto.subtransforms:
-        constructor = define_transform(
-            transform_writer, subtransform)
-        use_transform(transform_writer, local_pcolls, subtransform, constructor)
-      if len(transform_proto.outputs) == 0:
-        pass
-      elif len(transform_proto.outputs) == 1:
-        transform_writer.add_statement(
-            f'return {local_pcolls[next(iter(transform_proto.outputs.values()))]}'
-        )
-      else:
-        transform_writer.add_statement(
-            'return {%s}' + ', '.join(
-                f'"{name}": local_pcolls[pcoll]' for name,
-                pcoll in transform_proto.outputs))
-      writer.add_define(transform_writer)
-      return transform_name + "()"
+      return context.to_safe_name(transform_id + '_TODO') + "()"
 
   # TODO: All these params, plus duplicated above, indicate some kind of a
   # single scope object would be nice.
@@ -145,6 +150,9 @@ def source_for(pipeline):
                 for name,
                 pcoll in transform_proto.outputs.items()
             })
+
+  context.define_transform = define_transform
+  context.use_transform = use_transform
 
   # The top-level one is typically artificial.
   roots = pipeline.root_transform_ids
