@@ -8,14 +8,6 @@ import sys
 import google.protobuf.text_format
 
 
-class TransformWriter:
-  def __init__(self, writer):
-    self._writer = writer
-
-  def define_transform(self):
-    raise NotImplementedError(type(self))
-
-
 well_known_transforms = {
     'beam:transform:group_by_key:v1': lambda payload: 'beam.GroupByKey()',
     'beam:transform:impulse:v1': lambda payload: 'beam.Impulse()',
@@ -54,7 +46,7 @@ def source_for(pipeline):
     unique_names.add(s)
     return s
 
-  def define_transform(writer, pcolls, transform_id):
+  def define_transform(writer, transform_id):
     transform_proto = pipeline.components.transforms[transform_id]
     # TODO: We should let front-ends annotate how to construct the various
     # composites in various languages (or x-lang), likely via an entry in the
@@ -71,11 +63,11 @@ def source_for(pipeline):
           ', '.join("%s=%r" % item for item in json.loads(transform_proto.annotations['yaml_args']).items()),
       )
     elif transform_proto.subtransforms:
-      return define_composite_transform(writer, pcolls, transform_proto)
+      return define_composite_transform(writer, transform_proto)
     else:
       return to_safe_name(transform_id) + '_TODO()'
 
-  def define_composite_transform(writer, pcolls, transform_proto):
+  def define_composite_transform(writer, transform_proto):
       # Composites that we don't know.
       if len(transform_proto.inputs) == 0:
         arg_name = 'p'
@@ -105,7 +97,7 @@ def source_for(pipeline):
           ])
       for subtransform in transform_proto.subtransforms:
         constructor = define_transform(
-            transform_writer, local_pcolls, subtransform)
+            transform_writer, subtransform)
         use_transform(transform_writer, local_pcolls, subtransform, constructor)
       if len(transform_proto.outputs) == 0:
         pass
@@ -169,7 +161,7 @@ def source_for(pipeline):
     # Note the similarity here between the top-level and each transform.
     # TODO: Consolidate? (The primary difference is being in an expand
     # method vs. being in a with block.)
-    constructor = define_transform(pipeline_writer, pcolls, transform_id)
+    constructor = define_transform(pipeline_writer, transform_id)
     use_transform(pipeline_writer, pcolls, transform_id, constructor)
 
   return pipeline_writer.to_source()
