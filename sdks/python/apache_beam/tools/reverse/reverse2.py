@@ -114,6 +114,17 @@ class CodeNode:
   def __repr__(self):
     return str(vars(self))
 
+def is_write(pipeline, t):
+  if len(t.subtransforms) != 1:
+    return False
+  child = pipeline.components.transforms[t.subtransforms[0]]
+
+  return (
+      t.spec.urn == "beam:transform:generic_composite:v1"
+      and child.spec.urn == "beam:transform:generic_composite:v1"
+      and child.unique_name.endswith("/Write")
+    )
+
 def get_code_nodes(pipeline):
   nodes = {}
 
@@ -124,6 +135,7 @@ def get_code_nodes(pipeline):
     res = nodes[transform]
     res.refcount += 1
     return res
+
 
   def add(root):
     t = pipeline.components.transforms[root]
@@ -136,18 +148,17 @@ def get_code_nodes(pipeline):
       result.label = "WriteTODO"
       result.operation = "beam.io.WriteToTODO(TODO)"
 
-    elif urn == "beam:transform:generic_composite:v1" and len(t.subtransforms) == 1 and False:
-      result = add(t.subtransforms[0])
-      nodes[root] = result
-      result.label = t.unique_name
-      result.comment = t.spec.payload
+    elif is_write(pipeline, t):
+      result = get(root)
+      result.label = "WriteTODO"
+      result.operation = "beam.io.WriteToTODO(TODO)"
 
     elif urn == "beam:transform:generic_composite:v1" or urn == "":
       result = get(root)
       result.method = len(t.subtransforms) > 1
       for sub in t.subtransforms:
-        child = add(sub)
-        result.children.append(child)
+          child = add(sub)
+          result.children.append(child)
 
       name = t.unique_name if urn != "" else "pipeline"
       result.label = f'TODO {name}'
@@ -165,9 +176,15 @@ def get_code_nodes(pipeline):
       result.comment = t.unique_name
       result.operation = "beam.TODOMap(TODO)"
 
+    elif urn == "beam:transform:combine_per_key:v2" or urn == "beam:transform:combine_per_key:v1":
+      result = get(root)
+      result.comment = t.unique_name
+      result.operation = "beam.GroupByKey(TODO)"
 
     else:
       assert False, "Unhandled urn: " + urn
+
+    assert result.operation is not None, result
 
     return result
 
@@ -212,8 +229,12 @@ def codegen(pipeline, graph, codenodes):
       lines.append(SourceWriter.INDENT)
       topsort = order(map(lambda x: graph.nodes[x.transform], c.children))
 
+      done = set()
       vars = {}
       for child in topsort:
+        if child in done:
+          continue
+
         cn = codenodes[child]
         gn = graph.nodes[child]
 
@@ -225,9 +246,32 @@ def codegen(pipeline, graph, codenodes):
           if gn.parents[0] in vars:
             input = vars[gn.parents[0]]
 
+        pipe = [child]
+        previous = child
+        while len(graph.nodes[previous].children) == 1:
+          nex = graph.nodes[previous].children[0]
+          if len(graph.nodes[nex].parents) != 1:
+            break
+          previous = nex
+          pipe.append(nex)
+
         name = "var" + str(len(vars))
-        vars[gn.key] = name
-        lines.append(f'{name} = {input} | "{cn.label}" >> {cn.operation}')
+        if len(pipe) == 1:
+          vars[gn.key] = name
+          label = f' "{cn.label}" >>' if cn.label else ""
+          lines.append(f'{name} = {input} |{label} {cn.operation}')
+        else:
+          lines.append(f'{name} = ({input}')
+          lines.append(SourceWriter.INDENT)
+          for elem in pipe:
+            done.add(elem)
+            n = codenodes[elem]
+            close = ")" if elem == pipe[-1] else ""
+            label = f' "{n.label}" >>' if n.label else ""
+            lines.append(f' |{label} {n.operation}{close}')
+          vars[elem] = name
+          lines.append(SourceWriter.DEDENT)
+
 
       lines.append(f'return {vars[child]}')
       lines.append(SourceWriter.DEDENT)
@@ -438,8 +482,11 @@ def create_pipeline():
   p = beam.Pipeline()
   x = p | "MyRead" >> beam.io.ReadFromText("/dev/null")
   x = x | beam.Map(lambda x: x)
-  x = x | "MyWrite" >> beam.io.WriteToText("/dev/null")
+  x = x | beam.Map(lambda x: x)
+  x = x | beam.Map(lambda x: x)
+  x1 = x | "MyWrite" >> beam.io.WriteToText("/dev/null")
   return p
+
 
 def run():
   parser = argparse.ArgumentParser(
