@@ -153,6 +153,11 @@ def get_code_nodes(pipeline):
       result.label = "WriteTODO"
       result.operation = "beam.io.WriteToTODO(TODO)"
 
+    elif urn == "com.google:dax-sink":
+      result = get(root)
+      result.label = "WriteTODO"
+      result.operation = "beam.io.WriteToTODO(TODO)"
+
     elif urn == "beam:transform:generic_composite:v1" or urn == "":
       result = get(root)
       result.method = len(t.subtransforms) > 1
@@ -166,6 +171,11 @@ def get_code_nodes(pipeline):
       result.name = name
 
     elif urn == "beam:transform:read:v1":
+      result = get(root)
+      result.label = "ReadTODO"
+      result.operation = "beam.io.ReadFromTODO(TODO)"
+
+    elif urn == "com.google:dax-source":
       result = get(root)
       result.label = "ReadTODO"
       result.operation = "beam.io.ReadFromTODO(TODO)"
@@ -211,6 +221,8 @@ def order(nodes):
   deps = {}
   for n in nodes:
     deps[n.key] = list(n.parents)
+  for k,v in deps.items():
+    deps[k] = list(filter(lambda x: x in deps, v))
   return topsort(deps)
 
 def codegen(pipeline, graph, codenodes):
@@ -245,6 +257,8 @@ def codegen(pipeline, graph, codenodes):
         else:
           if gn.parents[0] in vars:
             input = vars[gn.parents[0]]
+          else:
+            input = "FIXME"
 
         pipe = [child]
         previous = child
@@ -481,9 +495,19 @@ def create_pipeline():
 def create_pipeline():
   p = beam.Pipeline()
   x = p | "MyRead" >> beam.io.ReadFromText("/dev/null")
+  x = x | beam.Filter(lambda x: x > 2)
   x = x | beam.Map(lambda x: x)
-  x = x | beam.Map(lambda x: x)
-  x = x | beam.Map(lambda x: x)
+  x = x | beam.Keys()
+  x1 = x | "MyWrite" >> beam.io.WriteToText("/dev/null")
+  return p
+
+def create_pipeline():
+  p = beam.Pipeline()
+  x = p | "MyRead" >> beam.io.ReadFromText("/dev/null")
+  x = x | 'Split' >> beam.FlatMap(lambda x: re.findall(r'[A-Za-z\']+', x)) 
+  x = x | 'PairWithOne' >> beam.Map(lambda x: (x, 1))
+  x = x | 'Count' >> beam.CombinePerKey(sum)
+  x = x | 'Format' >> beam.MapTuple(lambda word, count: '%s: %s' % (word, count))
   x1 = x | "MyWrite" >> beam.io.WriteToText("/dev/null")
   return p
 
