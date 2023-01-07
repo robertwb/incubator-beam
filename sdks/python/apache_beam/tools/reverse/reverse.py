@@ -82,6 +82,25 @@ class CompositeTransformDefiner(TransformDefiner):
       writer.add_define(transform_writer)
       return transform_name + "()"
 
+class PythonYamlTransformDefiner(TransformDefiner):
+  def define_transform(self, writer, transform_proto, context):
+    yaml_type = transform_proto.annotations['yaml_type'].decode('utf-8')
+    posargs = []
+    kwargs = json.loads(transform_proto.annotations['yaml_args'])
+    # See the list in yaml's InlineProvider...
+    if yaml_type == 'Create':
+      transform_type = 'beam.Create'
+      pos_args = [kwargs.pop('elements')]
+    if yaml_type in ('PyMap', 'PyFlatMap', 'PyMapTuple', 'PyFlatMapTuple', 'PyFilter'):
+      transform_type = 'beam.' + yaml_type[2:]
+      pos_args = ['PythonCallableWithSource(%r)' % kwargs.pop('fn')]
+    else:
+      transform_type = yaml_type
+    return '%s(%s)' % (
+        transform_type,
+        ', '.join([str(arg) for arg in pos_args] + ["%s=%r" % item for item in kwargs.items()]),
+    )
+
 def source_for(pipeline):
   print(pipeline)
   # Attempt do to input | Transform | Transform | ...
@@ -109,10 +128,7 @@ def source_for(pipeline):
       return well_known_transforms[transform_proto.spec.urn](
           transform_proto.spec.payload)
     elif 'yaml_args' in transform_proto.annotations:
-      return '%s(%s)' % (
-          transform_proto.annotations['yaml_type'].decode('utf-8'),
-          ', '.join("%s=%r" % item for item in json.loads(transform_proto.annotations['yaml_args']).items()),
-      )
+      return PythonYamlTransformDefiner().define_transform(writer, transform_proto, context)
     elif transform_proto.subtransforms:
       return CompositeTransformDefiner().define_transform(writer, transform_proto, context)
     else:
