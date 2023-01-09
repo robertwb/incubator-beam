@@ -1,14 +1,64 @@
 import apache_beam as beam
 import argparse
 import collections
+import io
 import json
 import re
+import subprocess
 import sys
 
-import io
-import subprocess
+import yaml
 
 import google.protobuf.text_format
+
+
+def yaml_friendly_transform(cls):
+  constructor = f'{cls.__module__}.{cls.__qualname__}'
+
+  def wrapper(*args, **kwargs):
+    result = cls(*args, **kwargs)
+    old_annotations = result.annotations
+    result.annotations = lambda: dict(
+        yaml_type='PyTransform',
+        yaml_args=json.dumps({
+            'constructor': constructor,
+            "args": args,
+            "kwargs": kwargs,
+        }),
+        **old_annotations())
+    return result
+
+  return wrapper
+
+
+@yaml_friendly_transform
+class Surround(beam.PTransform):
+  def __init__(self, prefix, suffix):
+    self.prefix = prefix
+    self.suffix = suffix
+
+  def expand(self, pcoll):
+    # Avoid capturing self...
+    prefix = self.prefix
+    suffix = self.suffix
+    return pcoll | beam.Map(lambda s: f'{prefix}{s}{suffix}')
+
+
+def is_default_name(user_name, constructor):
+  # language bits?
+  if 'MAP_MAP' in constructor:
+    return True
+  if constructor.startswith('new '):
+    constructor = constructor[4:]
+  if constructor.startswith('beam.'):
+    constructor = constructor[5:]
+  m = re.match('^([A-Za-z]+)[(](.*)[)]$', user_name)
+  if m:
+    if m.group(1) in constructor and m.group(2) in constructor:
+      return True
+  constructor = constructor[0].upper() + constructor[1:]
+  return constructor == user_name or constructor.startswith(
+      user_name + '(') or constructor.startswith(user_name + '.')
 
 
 class TransformDefinerContext:
@@ -83,7 +133,7 @@ class TransformDefinerContext:
       return CompositeTransformDefiner().define_transform(
           writer, transform_id, self)
     else:
-      return context.to_safe_name(transform_id + '_TODO') + "()"
+      return self.to_safe_name(transform_id + '_TODO')
 
   def use_transform(self, writer, pcolls, transform_id, constructor):
     transform_proto = self.pipeline.components.transforms[transform_id]
@@ -97,25 +147,6 @@ class TransformDefinerContext:
           input in transform_proto.inputs.items()
       ])
     user_name = self.strip_prefix(transform_proto.unique_name)
-
-    def is_default_name(user_name, constructor):
-      # language bits?
-      if constructor.startswith('new '):
-        constructor = constructor[4:]
-      if constructor.startswith('beam.'):
-        constructor = constructor[5:]
-      m = re.match('^([A-Za-z]+)[(](.*)[)]$', user_name)
-      if m:
-        if m.group(1) in constructor and m.group(2) in constructor:
-          return True
-      return constructor.startswith(user_name + '(') or constructor.startswith(
-          user_name + '.')
-
-    print(
-        "ELIDE",
-        user_name,
-        constructor,
-        is_default_name(user_name, constructor))
     if is_default_name(user_name, constructor):
       user_name = None
     result = self.language_bits.apply(inputs, user_name, constructor)
@@ -187,8 +218,9 @@ class CompositeTransformDefiner(TransformDefiner):
       pass
     elif len(transform_proto.outputs) == 1:
       transform_writer.add_statement(
-          f'return {context.language_bits.maybe_parens(local_pcolls[next(iter(transform_proto.outputs.values()))])}'
-      )
+          context.language_bits.return_(
+              context.language_bits.maybe_parens(
+                  local_pcolls[next(iter(transform_proto.outputs.values()))])))
     else:
       transform_writer.add_statement(
           'return {%s}' + ', '.join(
@@ -297,6 +329,9 @@ class LanguageBits:
   def statement_end(self):
     raise NotImplementedError(type(self))
 
+  def return_(self, value):
+    return f'return {value}'
+
   def declare_pcollection(self, name, coder):
     raise NotImplementedError(type(self))
 
@@ -322,6 +357,9 @@ class LanguageBits:
     yield from non_beam_imports
     yield ''
     yield from beam_imports
+
+  def invoke_main(self):
+    return []
 
 
 class PythonBits(LanguageBits):
@@ -492,17 +530,9 @@ class GoYamlTransformDefiner(TransformDefiner):
       pos_args = [source]
     else:
       transform_type = yaml_type
-    pos_args_str = ", ".join(list(pos_args) + list(kwargs.values()))
-    constructor = 'PythonExternalTransform({{SCOPE}}, "{transform_type}", {pos_args_str}, {{INPUT}})' % transform_type
-
-    def java_repr(o):
-      if isinstance(o, str):
-        return f'"{o}"'
-      else:
-        return repr(o)
-
-    for key, value in kwargs.items():
-      constructor += '.withKwarg("%s", %s)' % (key, java_repr(value))
+    pos_args_str = ", ".join(
+        str(s) for s in [list(pos_args) + list(kwargs.values())])
+    constructor = f'PythonExternalTransform({{SCOPE}}, "{transform_type}", {pos_args_str}, {{INPUT}})'
     return constructor
 
 
@@ -615,12 +645,339 @@ class GoBits(LanguageBits):
     ]
 
 
+class TypescriptYamlTransformDefiner(TransformDefiner):
+  def define_transform(self, writer, transform_id, context):
+    transform_proto = context.pipeline.components.transforms[transform_id]
+    yaml_type = transform_proto.annotations['yaml_type'].decode('utf-8')
+    pos_args = []
+    kwargs = json.loads(transform_proto.annotations['yaml_args'])
+    # See the list in yaml's InlineProvider...
+    if yaml_type == 'Create':
+      return 'beam.Create(%s)' % ', '.join(
+          repr(e) for e in kwargs.pop('elements'))
+
+    elif yaml_type in ('PyMap', ):
+      m = re.match('^lambda ([a-z]+): ([ 0-9a-z+*/-]+)$', kwargs['fn'])
+      if m:
+        return f'MAP_MAP(({m.group(1)}) => ({m.group(2)})'
+
+    elif yaml_type == 'ReadFromText':
+      assert len(kwargs) == 1
+      return ' textio.readFromText("%s")' % kwargs.pop('file_pattern')
+
+    if yaml_type in ('PyMap',
+                     'PyFlatMap',
+                     'PyMapTuple',
+                     'PyFlatMapTuple',
+                     'PyFilter'):
+      transform_type = 'beam.' + yaml_type[2:]
+      source = 'pythonCallable(%r)' % kwargs.pop('fn')
+      # TODO: Add a way to return that the name should be skipped.
+      pos_args = [source]
+    else:
+      transform_type = yaml_type
+    pos_args_str = ", ".join(pos_args)
+    kwargs_str = ", ".join(
+        f"{name}: {repr(value)}" for (name, value) in kwargs.items())
+    return f'pythonTransform("{transform_type}", [{pos_args_str}], {kwargs_str})'
+
+
+class TypescriptBits(LanguageBits):
+  def standard_imports(self):
+    return [
+        'import * as yargs from "yargs";',
+        'import * as beam from "../../apache_beam";',
+        'import { createRunner } from "../runners/runner";',
+    ]
+
+  well_known_transforms = {
+      'beam:transform:group_by_key:v1': lambda payload: 'beam.groupByKey()',
+      'beam:transform:impulse:v1': lambda payload: 'beam.impulse()',
+  }
+
+  yaml_transform_definer = TypescriptYamlTransformDefiner()
+
+  def construct_transform(self, name):
+    return f"{name}"
+
+  def pretty(self, raw):
+    raw = raw.replace('CLOSE_PIPELINE_DEF;\n}', '});')
+    raw = raw.replace('apply(MAP_MAP', 'map')
+    result = subprocess.run(
+        ['npx', 'prettier', '--stdin', '--stdin-filepath=my_pipeline.ts'],
+        input=raw.encode('utf-8'),
+        capture_output=True)
+    if result.returncode == 0:
+      return result.stdout.decode('utf-8')
+    else:
+      print('\n'.join(str(s) for s in list(enumerate(raw.split('\n')))))
+      print(result.stderr.decode('utf-8'))
+      return raw
+
+  def apply(self, input, name, transform):
+    if name is None:
+      return f'{input}.apply({transform})'
+    else:
+      return f'{input}.apply(beam.withName("{name}", {transform}))'
+
+  def braces(self):
+    return '{}'
+
+  def statement_end(self):
+    return ';'
+
+  def declare_and_assign_pcollection(self, name, coder, src):
+    return f'const {name} = {src}'
+
+  def pre_pipeline(self):
+    return [
+        'async function main()',
+        SourceWriter.INDENT,
+        'await createRunner(yargs.argv).run((root) =>',
+        SourceWriter.INDENT,
+    ]
+
+  def post_pipeline(self):
+    return [
+        'CLOSE_PIPELINE_DEF',
+    ]
+
+  def invoke_main(self):
+    # hack, need after post_pipeline
+    return [
+        'main().catch((e) => console.error(e)).finally(() => process.exit());'
+    ]
+
+  def declare_ptransform(self, name, inputs, outputs, arg_name):
+    if len(inputs) == 0:
+      input_type = 'beam.Root'
+    elif len(inputs) == 1:
+      input_type = 'beam.PCollection<any>'
+    else:
+      input_type = '{name: PCollection<any>}'
+    if len(outputs) == 0:
+      output_type = '()'
+    elif len(outputs) == 1:
+      output_type = 'beam.PCollection<any>'
+    else:
+      output_type = '{name: PCollection<any>}'
+    return [
+        f"function {name}({arg_name}: {input_type}): {output_type}",
+        SourceWriter.INDENT,
+    ]
+
+
+# class YamlYamlTransformDefiner(TransformDefiner):
+#   def define_transform(self, writer, transform_id, context):
+#     transform_proto = context.pipeline.components.transforms[transform_id]
+#     return json.dumps({
+#         'type': transform_proto.annotations['yaml_type'].decode('utf-8'),
+#         'args': json.loads(transform_proto.annotations['yaml_args'])
+#     })
+
+
+class YamlBits(LanguageBits):
+  chain = False
+
+  def standard_imports(self):
+    return []
+
+  well_known_transforms = {
+      #      'beam:transform:group_by_key:v1': lambda payload: 'beam.groupByKey()',
+      #      'beam:transform:impulse:v1': lambda payload: 'beam.impulse()',
+  }
+
+  def apply(self, input, name, transform):
+    if name:
+      json_transform = json.loads(transform)
+      json_transform['name'] = name
+      transform = json.dumps(json_transform)
+    return transform + ','  # TODO: re/unpopulate name?
+#
+#   def construct_transform(self, transform_name):
+#     return transform_name
+#
+#   yaml_transform_definer = YamlYamlTransformDefiner()
+
+  def pretty(self, raw):
+    # Going through a string is kind of unnecessary, but this is how the rest
+    # is set up.
+    try:
+      out = io.StringIO()
+      yaml.dump(json.loads(raw), out)
+      out.seek(0)
+      return out.read()
+    except json.decoder.JSONDecodeError as exn:
+      print('\n'.join(str(s) for s in list(enumerate(raw.split('\n')))))
+      print(exn)
+      return raw
+
+  def braces(self):
+    return ''
+
+  def statement_end(self):
+    return ''
+
+  def declare_and_assign_pcollection(self, name, coder, src):
+    return src
+
+  def pre_pipeline(self):
+    return ['{"pipeline": {"transforms": [']
+
+  def post_pipeline(self):
+    return [
+        ']}}',
+    ]
+
+  def declare_ptransform(self, name, inputs, outputs, arg_name):
+    return []
+
+
+#   def return_(self, value):
+#     return ''
+
+  def define_transform(self, pipeline_writer, transform_id):
+    transform_proto = context.pipeline.components.transforms[transform_id]
+    if transform_proto.subtransforms:
+      return f'"COMPOSITE{transform_id}"'
+    else:
+      return json.dumps({
+          'type': transform_proto.annotations['yaml_type'].decode('utf-8'),
+          'args': json.loads(transform_proto.annotations['yaml_args'])
+      })
+
+
+class YamlEverything:
+  def to_json(self, pipeline):
+    # copy of AAA
+    context = TransformDefinerContext(pipeline, language_bits=None)
+    roots = pipeline.root_transform_ids
+    top = True
+    outputs = {}
+    while len(roots) == 1:
+      transform_id = next(iter(roots))
+      if top:
+        top = False
+      else:
+        outputs = pipeline.components.transforms[transform_id].outputs
+        context = context.sub_context(transform_id)
+      roots = pipeline.components.transforms[transform_id].subtransforms
+
+    return {
+        'pipeline': {
+            'transforms': [self.transform_to_json(pipeline, t) for t in roots]
+        }
+    }
+
+  def transform_to_json(self, pipeline, transform_id):
+    transform_proto = pipeline.components.transforms[transform_id]
+
+    # TODO: compute once
+    def local_name(transform_id):
+      transform_proto = pipeline.components.transforms[transform_id]
+      parent_proto = pipeline.components.transforms[parent(transform_id)]
+      if transform_proto.unique_name.startswith(parent_proto.unique_name + '/'):
+        return transform_proto.unique_name[len(parent_proto.unique_name) + 1:]
+      else:
+        return transform_proto.unique_name
+
+    def parent(transform_id):
+      for parent, parent_proto in pipeline.components.transforms.items():
+        if transform_id in parent_proto.subtransforms:
+          return parent
+      else:
+        raise ValueError("no parent for " + transform_id)
+
+    def local_pcoll_name(pcoll, root, siblings):
+      root_proto = pipeline.components.transforms[root]
+      # siblings always root_proto.subtransforms?
+      for name, id in root_proto.inputs.items():
+        if id == pcoll:
+          return name
+      for sibling in siblings:
+        sibling_proto = pipeline.components.transforms[sibling]
+        for name, id in sibling_proto.outputs.items():
+          if id == pcoll:
+            if len(sibling_proto.outputs) == 1:
+              return local_name(sibling)
+            else:
+              return f'{local_name(sibling)}.{id})'
+      raise ValueError(f"Unable to find {pcoll} in {root} siblings {siblings}")
+
+    if transform_proto.inputs:
+      parent_id = parent(transform_id)
+      parent_proto = pipeline.components.transforms[parent_id]
+      inputs = {
+          name: local_pcoll_name(pcoll, parent_id, parent_proto.subtransforms)
+          for (name, pcoll) in transform_proto.inputs.items()
+      }
+      if len(inputs) == 1:
+        inputs = next(iter(inputs.values()))
+    else:
+      inputs = {}
+
+    if 'yaml_type' in transform_proto.annotations:
+      result = {
+          'type': transform_proto.annotations['yaml_type'].decode('utf-8'),
+          'name': local_name(transform_id),
+          'input': inputs,
+          'args': json.loads(transform_proto.annotations['yaml_args']),
+      }
+      if not result['args']:
+        del result['args']
+      if result['name'] == result['type']:
+        del result['name']
+    else:
+      if transform_proto.subtransforms:
+        result = {
+            'type': 'composite',
+            'name': local_name(transform_id),
+            'input': inputs,
+            'transforms': [
+                self.transform_to_json(pipeline, t)
+                for t in transform_proto.subtransforms
+            ],
+        }
+        if transform_proto.outputs:
+          result['output'] = {
+              name: local_pcoll_name(
+                  pcoll, transform_id, transform_proto.subtransforms)
+              for (name, pcoll) in transform_proto.outputs.items()
+          }
+          if len(result['output']) == 1:
+            result['output'] = next(iter(result['output'].values()))
+      else:
+        return {
+            'type': "TODO",
+            'urn': transform_proto.spec.urn,
+            'name': local_name(transform_id)
+        }
+
+    if not result['input']:
+      del result['input']
+
+    if 'name' in result and is_default_name(result['name'], result['type']):
+      del result['name']
+
+    return result
+
+  def to_yaml(self, pipeline):
+    out = io.StringIO()
+    yaml.dump(self.to_json(pipeline), out, sort_keys=False)
+    out.seek(0)
+    return out.read()
+
+
 def source_for(pipeline, langauge_bits=None):
   if langauge_bits is None:
     print(pipeline)
     return '\n\n----------------------\n\n'.join(
-        source_for(pipeline, bits)
-        for bits in [JavaBits(), PythonBits(), GoBits()])
+        source_for(pipeline, bits) for bits in [
+            JavaBits(),
+            PythonBits(),
+            #            GoBits(),
+            TypescriptBits(),
+        ])
 
   pcolls = {}
   context = TransformDefinerContext(pipeline, langauge_bits)
@@ -635,6 +992,7 @@ def source_for(pipeline, langauge_bits=None):
 #   context.use_transform = use_transform
 
 # The top-level one is typically artificial.
+# label AAA
   roots = pipeline.root_transform_ids
   top = True
   outputs = {}
@@ -732,6 +1090,8 @@ class SourceWriter:
         yield indent + line
       else:
         yield line
+    # hack
+    yield from self.language_bits.invoke_main()
 
   def to_source(self):
     return self.language_bits.pretty('\n'.join(self.to_source_lines()) + '\n')
@@ -739,8 +1099,22 @@ class SourceWriter:
 
 def create_python_pipeline():
   p = beam.Pipeline()
-  p | beam.Create([('a', 1), ('a', 2), ('b', 3)],
-                  reshuffle=False) | beam.GroupByKey() | beam.Map(print)
+  (
+      p
+      | beam.Create([('a', 1), ('a', 2), ('b', 3)], reshuffle=False)
+      | beam.GroupByKey()
+      | beam.Map(print)
+      #| Surround(prefix='[', suffix=']')
+  )
+  return p
+
+
+def create_python2_pipeline():
+  p = beam.Pipeline()
+  (
+      p
+      | beam.Create([('a', 1), ('a', 2), ('b', 3)], reshuffle=False)
+      | Surround(prefix='[', suffix=']'))
   return p
 
 
@@ -763,46 +1137,52 @@ def create_yaml_pipeline():
 
 def create_yaml2_pipeline():
   from apache_beam.yaml.yaml_transform import YamlTransform
-  p = beam.Pipeline()
-  p | YamlTransform(
-      '''
-      type: composite
-      transforms:
-        - name: Foo
-          type: chain
-          transforms:
-            - type: Create
-              elements: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-            - type: PyMap
-              fn: "lambda x: x * x + x"
-            - type: PyMap
-              fn: "lambda x: x + 41"
-        - type: PyMap
-          input: Foo
-          fn: math.sin
-        - type: PyMap
-          input: Foo
-          fn: math.cos
+  from apache_beam.options.pipeline_options import PipelineOptions
+  if True:
+    p = beam.Pipeline()
+    #   with beam.Pipeline(options=PipelineOptions([
+    #       '--runner=apache_beam.runners.render.RenderRunner',
+    #       '--render_port=5555',
+    #   ])) as p:
+    p | YamlTransform(
+        '''
+        type: composite
+        transforms:
+          - name: Foo
+            type: chain
+            transforms:
+              - type: Create
+                elements: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+              - type: PyMap
+                fn: "lambda x: x * x + x"
+              - type: PyMap
+                fn: "lambda x: x + 41"
+          - type: PyMap
+            input: Foo
+            fn: math.sin
+          - type: PyMap
+            input: Foo
+            fn: math.cos
 
-        - type: ReadFromText
-          name: DoRead
-          file_pattern: "/tmp/*.txt"
-        - type: chain
-          name: WordsByFirstLetter
-          input: DoRead
-          transforms:
-            - type: PyMap
-              fn: str.lower
-            - type: PyFlatMap
-              fn: "lambda line: line.split()"
-            - type: PyMap
-              fn: "lambda word: (word[0], word)"
-            - type: GroupByKey
-        - type: PyMap
-          input: WordsByFirstLetter
-          fn: print
-          ''')
-  return p
+          - type: ReadFromText
+            name: DoRead
+            file_pattern: "/tmp/*.txt"
+          - type: chain
+            name: WordsByFirstLetter
+            input: DoRead
+            transforms:
+              - type: PyMap
+                fn: str.lower
+              - type: PyFlatMap
+                fn: "lambda line: line.split()"
+              - type: PyMap
+                fn: "lambda word: (word[0], word)"
+              - type: GroupByKey
+          - type: PyMap
+            input: WordsByFirstLetter
+            fn: print
+            ''')
+    return p
 
 
 def run():
@@ -825,6 +1205,8 @@ def run():
   else:
     if args.source == 'python':
       pipeline_object = create_python_pipeline()
+    elif args.source == 'python2':
+      pipeline_object = create_python2_pipeline()
     elif args.source == 'yaml':
       pipeline_object = create_yaml_pipeline()
     elif args.source == 'yaml2':
@@ -834,6 +1216,9 @@ def run():
     proto = pipeline_object.to_runner_api()
 
   print(source_for(proto))
+  if 'yaml' in args.source or True:
+    print('\n\n----------------------\n\n')
+    print(YamlEverything().to_yaml(proto))
 
 
 if __name__ == '__main__':
