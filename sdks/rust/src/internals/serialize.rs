@@ -12,8 +12,9 @@ static SERIALIZED_FNS: Lazy<Mutex<HashMap<String, Box<dyn Any + Sync + Send>>>> 
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 pub fn serialize_fn<T: Any + Sync + Send>(obj: Box<T>) -> String {
-    let name = format!("object{}", SERIALIZED_FNS.lock().unwrap().len());
-    SERIALIZED_FNS.lock().unwrap().insert(name.to_string(), obj);
+    let mut binding = SERIALIZED_FNS.lock().unwrap();
+    let name = format!("object{}", binding.len());
+    binding.insert(name.to_string(), obj);
     name
 }
 
