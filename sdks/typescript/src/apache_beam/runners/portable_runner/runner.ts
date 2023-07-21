@@ -256,6 +256,39 @@ export class PortableRunner extends Runner {
           );
           deps.push(fileArtifact(packFile, "beam:artifact:type:npm:v1"));
 
+          // Package apache-beam as a dependency.
+          {
+            const result = childProcess.spawnSync(
+              "npm",
+              ["pack", "apache-beam@2_49_rc", "--pack-destination", tmpDir],
+              {
+                encoding: "latin1",
+              }
+            );
+            if (result.status === 0) {
+              console.debug(result.stdout);
+            } else {
+              throw new Error(result.output);
+            }
+            const packFile = path.resolve(
+              path.join(tmpDir, result.stdout.trim())
+            );
+            deps.push(
+              fileArtifact(
+                packFile,
+                "beam:artifact:type:npm_dep:v1",
+                new TextEncoder().encode('apache-beam-unused')
+              )
+            );
+            deps.push(
+              fileArtifact(
+                packFile,
+                "beam:artifact:type:npm:v1",
+                new TextEncoder().encode('apache-beam')
+              )
+            );
+          }
+
           // If any dependencies are files, package them up as well.
           if (fs.existsSync("package.json")) {
             const packageData = JSON.parse(fs.readFileSync("package.json"));
