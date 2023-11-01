@@ -250,7 +250,7 @@ public class ExecutionStateSampler {
     private final AtomicReference<@Nullable Thread> trackedThread;
     // Read by multiple threads, read and written by the ExecutionStateSampler thread lazily.
     private final AtomicLong lastTransitionTime;
-    // Used to throttle lull logging.
+    // Duration used to throttle lull logging.
     private long lastLullReport;
     // Read and written by the bundle processing thread frequently.
     private long numTransitions;
