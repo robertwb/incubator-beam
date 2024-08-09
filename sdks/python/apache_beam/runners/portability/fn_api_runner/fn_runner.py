@@ -20,6 +20,7 @@
 # pytype: skip-file
 # mypy: check-untyped-defs
 
+import collections
 import contextlib
 import copy
 import itertools
@@ -202,6 +203,53 @@ class FnApiRunner(runner.PipelineRunner):
       pipeline_proto: beam_runner_api_pb2.Pipeline,
       options: pipeline_options.PipelineOptions) -> 'RunnerResult':
     validate_pipeline_graph(pipeline_proto)
+
+    def pushdown_projections(pipeline_proto):
+      leaf_consumers = collections.defaultdict(list)
+      for transform in pipeline_proto.components.transforms.values():
+        for pc in transform.inputs.values():
+          if not transform.subtransforms:
+            leaf_consumers[pc].append(transform)
+
+      seen = set()
+
+      def annotate_pushdowns(transform):
+        if transform.unique_name in seen:
+          return
+        seen.add(transform.unique_name)
+        if (transform.subtransforms
+            or not transform.outputs
+            or (common_urns.support_pushdown_annotation not in transform.annotations
+                and common_urns.forwards_pushdown_annotation not in transform.annotations)):
+          return
+        # The annotations should really be per input and output.
+        consumers = sum(
+            (leaf_consumers[pc] for pc in transform.outputs.values()), [])
+        if not consumers:
+          return
+        for c in consumers:
+          annotate_pushdowns(c)
+          if common_urns.requests_pushdown_annotation not in c.annotations:
+            return
+        fields = set(
+            sum((
+                c.annotations[common_urns.requests_pushdown_annotation].split(
+                    b',') for c in consumers), []))
+        if common_urns.support_pushdown_annotation in transform.annotations:
+          transform.annotations[
+              common_urns.actuate_pushdown_annotation] = b','.join(fields)
+        if common_urns.forwards_pushdown_annotation in transform.annotations:
+          transform.annotations[
+              common_urns.requests_pushdown_annotation] = b','.join(fields)
+
+      for transform in pipeline_proto.components.transforms.values():
+        annotate_pushdowns(transform)
+
+      print(pipeline_proto)
+      return pipeline_proto
+
+    pipeline_proto = pushdown_projections(pipeline_proto)
+
     self._validate_requirements(pipeline_proto)
     self._check_requirements(pipeline_proto)
     direct_options = options.view_as(pipeline_options.DirectOptions)

@@ -91,3 +91,8 @@ fixed_bytes = LogicalTypes.Enum.FIXED_BYTES
 var_bytes = LogicalTypes.Enum.VAR_BYTES
 fixed_char = LogicalTypes.Enum.FIXED_CHAR
 var_char = LogicalTypes.Enum.VAR_CHAR
+
+support_pushdown_annotation = "beam:annotations:supports_pushdown:prototype1"
+requests_pushdown_annotation = "beam:annotations:requests_pushdown:prototype1"
+forwards_pushdown_annotation = "beam:annotations:forwards_pushdown:prototype1"
+actuate_pushdown_annotation =  "beam:annotations:actuate_pushdown:prototype1"

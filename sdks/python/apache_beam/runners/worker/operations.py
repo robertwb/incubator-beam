@@ -460,9 +460,11 @@ class Operation(object):
     self.step_name = None  # type: Optional[str]
     self.data_sampler: Optional[DataSampler] = None
 
+  def actuate_pushdown(self, fields):
+    raise NotImplementedError(type(self))
+
   def setup(self, data_sampler=None):
     # type: (Optional[DataSampler]) -> None
-
     """Set up operation.
 
     This must be called before any other methods of the operation."""
@@ -810,6 +812,10 @@ class DoOperation(Operation):
     self.tagged_receivers = None  # type: Optional[_TaggedReceivers]
     # A mapping of timer tags to the input "PCollections" they come in on.
     self.input_info = None  # type: Optional[OpInputInfo]
+    self._pushdown_fields = None
+
+  def actuate_pushdown(self, fields):
+    self._pushdown_fields = fields
 
     # See fn_data in dataflow_runner.py
     # TODO: Store all the items from spec?
@@ -910,6 +916,11 @@ class DoOperation(Operation):
           self.side_input_maps = list(self._read_side_inputs(tags_and_types))
         else:
           self.side_input_maps = []
+
+      if self._pushdown_fields:
+        logging.info(
+            'Pushing down projection %s into %s', fn, self._pushdown_fields)
+        fn = fn.with_projection_pushdown(self._pushdown_fields)
 
       self.dofn_runner = common.DoFnRunner(
           fn,

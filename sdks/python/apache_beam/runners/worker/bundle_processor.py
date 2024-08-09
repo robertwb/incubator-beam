@@ -1334,7 +1334,12 @@ class BeamTransformFactory(object):
     creator, parameter_type = self._known_urns[transform_proto.spec.urn]
     payload = proto_utils.parse_Bytes(
         transform_proto.spec.payload, parameter_type)
-    return creator(self, transform_id, transform_proto, payload, consumers)
+    operation = creator(self, transform_id, transform_proto, payload, consumers)
+    if common_urns.actuate_pushdown_annotation in transform_proto.annotations:
+      operation.actuate_pushdown(
+          transform_proto.annotations[common_urns.actuate_pushdown_annotation].
+          decode('utf-8').split(','))
+    return operation
 
   def extract_timers_info(self):
     # type: () -> Dict[Tuple[str, str], TimerInfo]
@@ -1557,6 +1562,10 @@ def create_pair_with_restriction(*args):
       self.restriction_provider = restriction_provider
       self.watermark_estimator_provider = watermark_estimator_provider
 
+    # TODO(robertwb): Consider putting the pushdown after this optimization.
+    def with_projection_pushdown(self, *args):
+      return self
+
     def process(self, element, *args, **kwargs):
       # TODO(SDF): Do we want to allow mutation of the element?
       # (E.g. it could be nice to shift bulky description to the portion
@@ -1580,6 +1589,10 @@ def create_split_and_size_restrictions(*args):
       self.restriction_provider = restriction_provider
       self.watermark_estimator_provider = watermark_estimator_provider
 
+    # TODO(robertwb): Consider putting the pushdown after this optimization.
+    def with_projection_pushdown(self, *args):
+      return self
+
     def process(self, element_restriction, *args, **kwargs):
       element, (restriction, _) = element_restriction
       for part, size in self.restriction_provider.split_and_size(
@@ -1601,6 +1614,10 @@ def create_truncate_sized_restriction(*args):
   class TruncateAndSizeRestriction(beam.DoFn):
     def __init__(self, fn, restriction_provider, watermark_estimator_provider):
       self.restriction_provider = restriction_provider
+
+    # TODO(robertwb): Consider putting the pushdown after this optimization.
+    def with_projection_pushdown(self, *args):
+      return self
 
     def process(self, element_restriction, *args, **kwargs):
       ((element, (restriction, estimator_state)), _) = element_restriction

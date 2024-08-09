@@ -1154,6 +1154,17 @@ class AppliedPTransform(object):
           for key,
           a in transform.annotations().items()
       }
+
+      if transform.supports_projection_pushdown():
+        annotations[common_urns.support_pushdown_annotation] = b''
+
+      if transform.requests_projection_pushdown():
+        annotations[common_urns.requests_pushdown_annotation] = ','.join(
+            transform.requests_projection_pushdown()).encode('utf-8')
+
+      if transform.forwards_projection_pushdown():
+        annotations[common_urns.forwards_pushdown_annotation] = b''
+
     self.annotations = annotations
 
   @property
