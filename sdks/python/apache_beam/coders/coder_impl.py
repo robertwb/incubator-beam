@@ -1207,6 +1207,10 @@ class SequenceCoderImpl(StreamCoderImpl):
       # -1 to indicate that the length is not known.
       out.write_bigendian_int32(-1)
       buffer = create_OutputStream()
+      # DO NOT SUBMIT. Can't remember the flag that controls this,
+      # but it should be large enough to not catch anything other
+      # than the GBK in question.
+      self._write_state_threshold = 10000
       if self._write_state is None:
         target_buffer_size = self._DEFAULT_BUFFER_SIZE
       else:
@@ -1226,6 +1230,7 @@ class SequenceCoderImpl(StreamCoderImpl):
           buffer = create_OutputStream()
           if (self._write_state is not None and
               out.size() - start_size > self._write_state_threshold):
+            print("SPILLING", out.size() - start_size, self._write_state_threshold)
             tail = (
                 value_iter[index +
                            1:] if isinstance(value_iter,

@@ -102,7 +102,7 @@ class FnApiRunner(runner.PipelineRunner):
       self,
       default_environment: Optional[environments.Environment] = None,
       bundle_repeat: int = 0,
-      use_state_iterables: bool = False,
+      use_state_iterables: bool = True, #False,
       provision_info: Optional['ExtendedProvisionInfo'] = None,
       progress_request_frequency: Optional[float] = None,
       is_drain: bool = False) -> None:

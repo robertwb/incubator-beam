@@ -91,6 +91,7 @@ public class StateBackedIterable<T>
     this.prefix = prefix;
     this.suffix =
         StateFetchingIterators.readAllAndDecodeStartingFrom(
+            // Caches.noop(),
             Caches.subCache(cache, stateKey), beamFnStateClient, request, elemCoder);
     this.elemCoder = elemCoder;
   }

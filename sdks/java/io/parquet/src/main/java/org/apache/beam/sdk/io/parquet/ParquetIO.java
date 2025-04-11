@@ -1101,11 +1101,70 @@ public class ParquetIO {
       this.writer = builder.build();
     }
 
+    static int ix = 0;
+
     @Override
     public void write(GenericRecord element) throws IOException {
       checkNotNull(writer, "Writer cannot be null");
-      writer.write(element);
+      ix += 1;
+      // This line raises memory from 3.5GB to 6GB...
+      // Calling toString() on a org.apache.avro.util.Utf8 will compute and cache it... doubling the
+      // memory requirements.
+      // Open question: why are these Utf8 objects kept around?
+      // String large = element.get("row").toString();
+      // This line does not impact memory.
+      // Object largeNotAsString = element.get("row");
+      byte[] elementBytes = ((org.apache.avro.util.Utf8) element.get("row")).getBytes();
+      if ((ix & (ix - 1)) == 0 || ix % 1000 == 0) {
+        System.out.println(
+            "SIZE " + ix + " " + element.get("row").getClass() + " " + elementBytes.length);
+      }
+      //       if (ix % 65000 == 0) {
+      //         // Trigger heap dump.
+      //         System.out.println(new long[Integer.MAX_VALUE].length);
+      //       }
+      // element =
+      //     new org.apache.avro.generic.GenericRecordBuilder(element.getSchema())
+      //         //  .set("row", new MyUtf8(org.apache.avro.util.Utf8.getBytesFor("small" +
+      //         // Math.random())))'
+      //         .set(
+      //             "row",
+      //             new org.apache.avro.util.Utf8(
+      //                 java.util.Arrays.copyOf(elementBytes, elementBytes.length)))
+      //         // Using element.get("row") makes memory go back up to ~6GB.
+      //         // Adding the .toString() increases it to ~9GB(!)
+      //         // .set("row", element.get("row").toString() + ix)
+      //         .build();
+      // Enabling this approximately doubles memory usage.
+      if (true) writer.write(element);
     }
+
+    /*
+    private static class MyUtf8 extends org.apache.avro.util.Utf8 {
+      public MyUtf8(byte[] value) {
+        super(value);
+      }
+
+      public MyUtf8(String value) {
+        super(value);
+      }
+
+      @Override
+      public String toString() {
+        throw new RuntimeException();
+      }
+
+      //       @Override
+      //       public byte[] getBytes() {
+      //         throw new RuntimeException();
+      //       }
+      //
+      //       @Override
+      //       public void writeExternal(java.io.ObjectOutput out) throws java.io.IOException {
+      //         throw new RuntimeException();
+      //       }
+    }
+    */
 
     @Override
     public void flush() throws IOException {

@@ -59,6 +59,13 @@ dependencies {
     // but needed for compile only under Java21, specifically, required for extending from AbstractKafkaAvroDeserializer
     compileOnly library.java.kafka
   }
+
+
+  //runtimeOnly project(path: ":runners:google-cloud-dataflow-java")
+  runtimeOnly project(path: ":runners:direct-java")
+  implementation project(path: ":runners:portability:java")
+  implementation project(":sdks:java:io:parquet")
+
   implementation library.java.kafka_clients
   implementation project(path: ":sdks:java:core", configuration: "shadow")
   implementation project(":sdks:java:extensions:avro")
@@ -66,6 +73,7 @@ dependencies {
   implementation project(":sdks:java:extensions:python")
   implementation project(":sdks:java:io:google-cloud-platform")
   implementation project(":sdks:java:io:kafka")
+  implementation project(":sdks:java:io:parquet")
   runtimeOnly project(":sdks:java:io:iceberg")
   implementation project(":sdks:java:managed")
   implementation project(":sdks:java:extensions:ml")
@@ -170,6 +178,8 @@ task preCommit() {
 tasks.create(name:"execute", type:JavaExec) {
   main = project.hasProperty("mainClass") ? project.getProperty("mainClass") : "NONE"
   classpath = sourceSets.main.runtimeClasspath
+  jvmArguments = ["-XX:+HeapDumpOnOutOfMemoryError"]
+  maxHeapSize = "5g"
   systemProperties System.getProperties()
   args project.hasProperty("exec.args") ? project.getProperty("exec.args").split() : []
 }

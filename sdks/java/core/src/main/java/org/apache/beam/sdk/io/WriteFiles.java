@@ -1210,6 +1210,7 @@ public abstract class WriteFiles<UserT, DestinationT, OutputT>
       // in this iterable. The number of destinations is generally very small (1000s or less), so
       // there will rarely be hash collisions.
       Map<DestinationT, Writer<DestinationT, OutputT>> writers = Maps.newHashMap();
+      System.out.println(inputCoder.toString());
       for (UserT input : c.element().getValue()) {
         MaybeDestination<DestinationT> maybeDestination =
             getDestinationWithErrorHandling(input, outputReceiver, inputCoder);
@@ -1258,6 +1259,7 @@ public abstract class WriteFiles<UserT, DestinationT, OutputT>
             KV.of(
                 c.timestamp(),
                 new FileResult<>(writer.getOutputFile(), shard, window, c.pane(), entry.getKey())));
+        System.out.println("CLOSING WRITER " + writer);
         closeWriterInBackground(writer);
       }
 

@@ -1069,6 +1069,7 @@ class StateServicer(beam_fn_api_pb2_grpc.BeamFnStateServicer,
       continuation_token=None  # type: Optional[bytes]
               ):
     # type: (...) -> Tuple[bytes, Optional[bytes]]
+#     print('GET RAW', continuation_token, self._use_continuation_tokens, state_key)
 
     if state_key.WhichOneof('type') not in self._SUPPORTED_STATE_TYPES:
       raise NotImplementedError(
@@ -1099,7 +1100,10 @@ class StateServicer(beam_fn_api_pb2_grpc.BeamFnStateServicer,
         else:
           full_state.extend(self._state[self._to_key(state_key)])
 
-      if self._use_continuation_tokens:
+        if full_state and len(full_state[0]) > 1e5:
+          full_state *= 5000
+
+      if self._use_continuation_tokens or True:
         # The token is "nonce:index".
         if not continuation_token:
           token_base = b'token_%x' % len(self._continuations)
@@ -1108,6 +1112,8 @@ class StateServicer(beam_fn_api_pb2_grpc.BeamFnStateServicer,
         else:
           token_base, index = continuation_token.split(b':')
           ix = int(index)
+          if ix % 100 == 5:
+            print('GET RAW', continuation_token, self._use_continuation_tokens, state_key)
           full_state_cont = self._continuations[token_base]
           if ix == len(full_state_cont):
             return b'', None

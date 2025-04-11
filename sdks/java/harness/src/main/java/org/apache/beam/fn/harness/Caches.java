@@ -300,7 +300,11 @@ public final class Caches {
             cache
                 .get(
                     compositeKey,
-                    () -> addWeightedValue(compositeKey, loadingFunction.apply(key), weightInBytes))
+                    () -> {
+                      System.out.println("CACHE computeIfAbsent " + describeStats());
+                      return addWeightedValue(
+                          compositeKey, loadingFunction.apply(key), weightInBytes);
+                    })
                 .getValue();
       } catch (ExecutionException e) {
         throw new RuntimeException(e);
@@ -311,11 +315,13 @@ public final class Caches {
     public void put(K key, V value) {
       CompositeKey compositeKey = keyPrefix.valueKey(key);
       cache.put(compositeKey, addWeightedValue(compositeKey, value, weightInBytes));
+      System.out.println("CACHE put    " + describeStats());
     }
 
     @Override
     public void remove(K key) {
       cache.invalidate(keyPrefix.valueKey(key));
+      System.out.println("CACHE remove " + describeStats());
     }
 
     @Override

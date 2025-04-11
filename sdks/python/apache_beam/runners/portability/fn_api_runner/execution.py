@@ -927,6 +927,7 @@ class FnApiRunnerExecutionContext(object):
         beam_fn_api_pb2.StateKey(
             runner=beam_fn_api_pb2.StateKey.Runner(key=token)),
         out.get())
+    print("_iterable_state_write", token, out.size())
     return token
 
   def commit_side_inputs_to_state(
